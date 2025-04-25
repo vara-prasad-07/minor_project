@@ -335,16 +335,7 @@ else:
     example_df = pd.DataFrame(example_data)
     st.dataframe(example_df)
     
-    # Placeholder visualization
-    st.subheader("Sample Visualization")
-    x = np.arange(0, 10, 0.1)
-    y = np.sin(x) + np.random.normal(0, 0.1, len(x))
-    plt.figure(figsize=(10, 5))
-    plt.plot(x, y)
-    plt.title("Sample Electricity Consumption Pattern")
-    plt.xlabel("Time")
-    plt.ylabel("Consumption (kWh)")
-    st.pyplot(plt)
+  
 
 # Footer
 st.markdown("---")
