@@ -4,18 +4,20 @@ import numpy as np
 from statsmodels.tsa.arima.model import ARIMA
 import datetime
 import plotly.graph_objects as go
+from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 import matplotlib.pyplot as plt
 import io
 import base64
+import math
 
 st.set_page_config(page_title="Electricity Consumption Forecaster", layout="wide")
 
 st.title("⚡ Electricity Consumption Forecaster")
 st.write("Upload your electricity consumption data and predict future consumption values")
 
-def train_arima_model(df, order=(2, 1, 2)):
+def train_arima_model(df, order=(2, 1, 2), validation_split=0.2):
     """
-    Trains an ARIMA model on the dataset and returns the fitted model.
+    Trains an ARIMA model on the dataset, evaluates it, and returns the fitted model and evaluation metrics.
     """
     # Ensure we have hourly frequency
     df = df.asfreq('H')
@@ -23,14 +25,39 @@ def train_arima_model(df, order=(2, 1, 2)):
     # Fill missing data if any
     df['consumption'].fillna(method='ffill', inplace=True)
     
-    # Train ARIMA model on the entire dataset
+    # Create train/test split for evaluation
+    split_idx = int(len(df) * (1 - validation_split))
+    train_data = df.iloc[:split_idx]
+    test_data = df.iloc[split_idx:]
+    
+    # Train ARIMA model on the training dataset
     try:
-        model = ARIMA(df['consumption'], order=order)
+        model = ARIMA(train_data['consumption'], order=order)
         model_fit = model.fit()
-        return model_fit
+        
+        # Generate predictions for test data
+        forecast = model_fit.forecast(steps=len(test_data))
+        
+        # Calculate accuracy metrics
+        mae = mean_absolute_error(test_data['consumption'], forecast)
+        rmse = math.sqrt(mean_squared_error(test_data['consumption'], forecast))
+        r2 = r2_score(test_data['consumption'], forecast)
+        
+        # Create evaluation results dataframe for plotting
+        eval_df = pd.DataFrame({
+            'actual': test_data['consumption'],
+            'predicted': forecast
+        })
+        
+        # Retrain on full dataset for future predictions
+        full_model = ARIMA(df['consumption'], order=order)
+        full_model_fit = full_model.fit()
+        
+        return full_model_fit, eval_df, {'mae': mae, 'rmse': rmse, 'r2': r2}
+    
     except Exception as e:
         st.error(f"Error during model training: {e}")
-        return None
+        return None, None, None
 
 def forecast_for_datetime(df, model_fit, forecast_date):
     """
@@ -110,6 +137,38 @@ def plot_forecast(df, forecast_df, forecast_date, prediction):
     
     return fig
 
+def plot_accuracy(eval_df):
+    """Create a plot showing model accuracy on validation data"""
+    fig = go.Figure()
+    
+    # Plot actual values
+    fig.add_trace(go.Scatter(
+        x=eval_df.index,
+        y=eval_df['actual'],
+        mode='lines',
+        name='Actual Consumption',
+        line=dict(color='blue')
+    ))
+    
+    # Plot predicted values
+    fig.add_trace(go.Scatter(
+        x=eval_df.index,
+        y=eval_df['predicted'],
+        mode='lines',
+        name='Model Prediction',
+        line=dict(color='red', dash='dash')
+    ))
+    
+    fig.update_layout(
+        title='Model Accuracy Evaluation',
+        xaxis_title='Date',
+        yaxis_title='Consumption (kWh)',
+        hovermode='x unified',
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+    )
+    
+    return fig
+
 # Sidebar for configuration
 with st.sidebar:
     st.header("Model Configuration")
@@ -139,9 +198,9 @@ with st.sidebar:
     # Extract the numeric rate value
     selected_rate = rate_options[selected_rate_option]
     
-    # Advanced options
-    st.subheader("Advanced Options")
-    confidence_interval = st.checkbox("Show confidence intervals", value=False)
+    # Model evaluation
+    st.subheader("Model Evaluation")
+    validation_split = st.slider("Validation data %", 5, 40, 20)
     
     # About section
     st.subheader("About")
@@ -189,35 +248,46 @@ if uploaded_file is not None:
                          yaxis_title='Consumption (kWh)')
         st.plotly_chart(fig, use_container_width=True)
         
-        # Train model
-        with st.spinner("Training ARIMA model..."):
-            arima_order = (p, d, q)
-            model_fit = train_arima_model(df, order=arima_order)
+        # Forecast section
+        st.subheader("Forecast Electricity Consumption")
+        
+        if forecast_type == "Single date":
+            # Single date forecast
+            col1, col2 = st.columns(2)
+            with col1:
+                forecast_date = st.date_input("Select date for forecast", 
+                                          value=df.index.max().date() + datetime.timedelta(days=1))
+            with col2:
+                forecast_time = st.time_input("Select time", 
+                                          value=datetime.time(hour=12, minute=0))
+        
+            forecast_datetime = datetime.datetime.combine(forecast_date, forecast_time)
             
-        if model_fit is not None:
-            st.success("Model training complete!")
-            
-            # Display model summary - FIXED: Removed problematic code that was causing the error
-            with st.expander("Model Summary"):
-                # Display a simpler summary that doesn't rely on writerow
-                st.text(str(model_fit.summary()))
-            
-            # Forecast section
-            st.subheader("Forecast Electricity Consumption")
-            
-            if forecast_type == "Single date":
-                # Single date forecast
-                col1, col2 = st.columns(2)
-                with col1:
-                    forecast_date = st.date_input("Select date for forecast", 
-                                              value=df.index.max().date() + datetime.timedelta(days=1))
-                with col2:
-                    forecast_time = st.time_input("Select time", 
-                                              value=datetime.time(hour=12, minute=0))
-            
-                forecast_datetime = datetime.datetime.combine(forecast_date, forecast_time)
-                
-                if st.button("Predict Consumption"):
+            if st.button("Predict Consumption"):
+                with st.spinner("Training ARIMA model..."):
+                    # Train the model only when the button is clicked
+                    arima_order = (p, d, q)
+                    model_fit, eval_df, metrics = train_arima_model(df, order=arima_order, validation_split=validation_split/100)
+                    
+                if model_fit is not None:
+                    st.success("Model training complete!")
+                    
+                    # Display model accuracy metrics
+                    st.subheader("Model Accuracy Metrics")
+                    col1, col2, col3 = st.columns(3)
+                    with col1:
+                        st.metric("Mean Absolute Error (MAE)", f"{metrics['mae']:.3f} kWh")
+                    with col2:
+                        st.metric("Root Mean Squared Error (RMSE)", f"{metrics['rmse']:.3f} kWh")
+                    with col3:
+                        st.metric("R² Score", f"{metrics['r2']:.3f}")
+                    
+                    # Plot model accuracy
+                    st.subheader("Model Accuracy Evaluation")
+                    accuracy_fig = plot_accuracy(eval_df)
+                    st.plotly_chart(accuracy_fig, use_container_width=True)
+                    
+                    # Generate forecast
                     with st.spinner("Generating forecast..."):
                         prediction, is_historical = forecast_for_datetime(df, model_fit, forecast_datetime)
                         
@@ -225,7 +295,7 @@ if uploaded_file is not None:
                         cost = calculate_cost(prediction, selected_rate)
                         
                         # Create a result container with styling
-                        st.markdown("### Forecast Result")
+                        st.subheader("Forecast Result")
                         result_container = st.container()
                         
                         with result_container:
@@ -255,22 +325,45 @@ if uploaded_file is not None:
                                 forecast_df = None
                                 
                             # Plot the forecast
-                            fig = plot_forecast(df, forecast_df, forecast_datetime, prediction)
-                            st.plotly_chart(fig, use_container_width=True)
+                            forecast_fig = plot_forecast(df, forecast_df, forecast_datetime, prediction)
+                            st.plotly_chart(forecast_fig, use_container_width=True)
+        
+        else:
+            # Range of dates forecast
+            col1, col2 = st.columns(2)
+            with col1:
+                start_date = st.date_input("Start date", 
+                                      value=df.index.max().date() + datetime.timedelta(days=1))
+            with col2:
+                end_date = st.date_input("End date", 
+                                    value=df.index.max().date() + datetime.timedelta(days=7))
             
-            else:
-                # Range of dates forecast
-                col1, col2 = st.columns(2)
-                with col1:
-                    start_date = st.date_input("Start date", 
-                                          value=df.index.max().date() + datetime.timedelta(days=1))
-                with col2:
-                    end_date = st.date_input("End date", 
-                                        value=df.index.max().date() + datetime.timedelta(days=7))
-                
-                forecast_freq = st.selectbox("Forecast frequency", ["Hourly", "Daily", "Weekly"], index=0)
-                
-                if st.button("Generate Forecast"):
+            forecast_freq = st.selectbox("Forecast frequency", ["Hourly", "Daily", "Weekly"], index=0)
+            
+            if st.button("Generate Forecast"):
+                with st.spinner("Training ARIMA model..."):
+                    # Train the model only when the button is clicked
+                    arima_order = (p, d, q)
+                    model_fit, eval_df, metrics = train_arima_model(df, order=arima_order, validation_split=validation_split/100)
+                    
+                if model_fit is not None:
+                    st.success("Model training complete!")
+                    
+                    # Display model accuracy metrics
+                    st.subheader("Model Accuracy Metrics")
+                    col1, col2, col3 = st.columns(3)
+                    with col1:
+                        st.metric("Mean Absolute Error (MAE)", f"{metrics['mae']:.3f} kWh")
+                    with col2:
+                        st.metric("Root Mean Squared Error (RMSE)", f"{metrics['rmse']:.3f} kWh")
+                    with col3:
+                        st.metric("R² Score", f"{metrics['r2']:.3f}")
+                    
+                    # Plot model accuracy
+                    st.subheader("Model Accuracy Evaluation")
+                    accuracy_fig = plot_accuracy(eval_df)
+                    st.plotly_chart(accuracy_fig, use_container_width=True)
+                    
                     with st.spinner("Generating forecast..."):
                         # Determine frequency
                         freq_map = {"Hourly": "H", "Daily": "D", "Weekly": "W"}
@@ -312,7 +405,7 @@ if uploaded_file is not None:
                             forecast_df['cost'] = forecast_df['forecast'].apply(lambda x: calculate_cost(x, selected_rate))
                             
                             # Display forecast results
-                            st.markdown("### Forecast Results")
+                            st.subheader("Forecast Results")
                             st.markdown(f"**Selected Rate:** {selected_rate_option}")
                             st.dataframe(forecast_df)
                             
@@ -390,8 +483,6 @@ else:
     example_df = pd.DataFrame(example_data)
     st.dataframe(example_df)
     
-  
-
 # Footer
 st.markdown("---")
 st.markdown("💡 **Tip:** For better results, provide at least one year of historical data with consistent intervals.")
