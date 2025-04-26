@@ -57,6 +57,10 @@ def forecast_for_datetime(df, model_fit, forecast_date):
     predicted_value = forecast_values.iloc[-1]
     return predicted_value, False
 
+def calculate_cost(consumption, rate_per_100_units):
+    """Calculate the cost based on consumption and rate per 100 units"""
+    return (consumption / 100) * rate_per_100_units
+
 def generate_download_link(df, filename="forecast_results.csv"):
     """Generate a link to download the dataframe as CSV"""
     csv = df.to_csv(index=True)
@@ -119,6 +123,21 @@ with st.sidebar:
     # Forecast horizon
     st.subheader("Forecast Horizon")
     forecast_type = st.radio("Forecast type:", ["Single date", "Range of dates"])
+    
+    # Electricity rate selection
+    st.subheader("Electricity Rate")
+    rate_options = {
+        "₹5 per 100 units": 5,
+        "₹7 per 100 units": 7,
+        "₹10 per 100 units": 10
+    }
+    selected_rate_option = st.selectbox(
+        "Select electricity rate:",
+        options=list(rate_options.keys()),
+        index=0
+    )
+    # Extract the numeric rate value
+    selected_rate = rate_options[selected_rate_option]
     
     # Advanced options
     st.subheader("Advanced Options")
@@ -202,18 +221,24 @@ if uploaded_file is not None:
                     with st.spinner("Generating forecast..."):
                         prediction, is_historical = forecast_for_datetime(df, model_fit, forecast_datetime)
                         
+                        # Calculate cost based on selected rate
+                        cost = calculate_cost(prediction, selected_rate)
+                        
                         # Create a result container with styling
                         st.markdown("### Forecast Result")
                         result_container = st.container()
                         
                         with result_container:
-                            col1, col2 = st.columns([1, 2])
+                            col1, col2, col3 = st.columns([1, 1, 1])
                             with col1:
                                 st.markdown(f"**Date and Time:**  \n{forecast_datetime.strftime('%Y-%m-%d %H:%M')}")
+                            with col2:
                                 st.markdown(f"**Predicted Consumption:**  \n{prediction:.3f} kWh")
+                            with col3:
+                                st.markdown(f"**Estimated Cost:**  \n₹{cost:.2f} ({selected_rate_option})")
                                 
-                                if is_historical:
-                                    st.warning("⚠️ This is a historical value, not a forecast")
+                            if is_historical:
+                                st.warning("⚠️ This is a historical value, not a forecast")
                             
                             # Create a forecast dataframe for visualization
                             if not is_historical:
@@ -283,9 +308,20 @@ if uploaded_file is not None:
                             # Filter to requested dates only
                             forecast_df = all_forecasts[all_forecasts.index.isin(forecast_dates)]
                             
+                            # Add cost calculation to forecast dataframe
+                            forecast_df['cost'] = forecast_df['forecast'].apply(lambda x: calculate_cost(x, selected_rate))
+                            
                             # Display forecast results
                             st.markdown("### Forecast Results")
+                            st.markdown(f"**Selected Rate:** {selected_rate_option}")
                             st.dataframe(forecast_df)
+                            
+                            # Display total cost
+                            total_consumption = forecast_df['forecast'].sum()
+                            total_cost = forecast_df['cost'].sum()
+                            
+                            st.markdown(f"**Total Predicted Consumption:** {total_consumption:.2f} kWh")
+                            st.markdown(f"**Total Estimated Cost:** ₹{total_cost:.2f}")
                             
                             # Download link
                             st.markdown(generate_download_link(forecast_df), unsafe_allow_html=True)
@@ -319,6 +355,25 @@ if uploaded_file is not None:
                             )
                             
                             st.plotly_chart(fig, use_container_width=True)
+                            
+                            # Create a second plot for costs
+                            cost_fig = go.Figure()
+                            cost_fig.add_trace(go.Scatter(
+                                x=forecast_df.index,
+                                y=forecast_df['cost'],
+                                mode='lines',
+                                name='Estimated Cost',
+                                line=dict(color='green')
+                            ))
+                            
+                            cost_fig.update_layout(
+                                title=f'Electricity Cost Forecast ({selected_rate_option})',
+                                xaxis_title='Date',
+                                yaxis_title='Cost (₹)',
+                                hovermode='x unified'
+                            )
+                            
+                            st.plotly_chart(cost_fig, use_container_width=True)
     
     except Exception as e:
         st.error(f"Error processing data: {e}")
